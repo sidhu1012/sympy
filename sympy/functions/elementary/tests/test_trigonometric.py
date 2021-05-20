@@ -1049,7 +1049,7 @@ def test_atan2():
     assert atan2(0, u) == pi
 
     assert atan2(y, oo) ==  0
-    assert atan2(y, -oo)==  2*pi*Heaviside(re(y)) - pi
+    assert atan2(y, -oo)==  2*pi*Heaviside(re(y), S.Half) - pi
 
     assert atan2(y, x).rewrite(log) == -I*log((x + I*y)/sqrt(x**2 + y**2))
     assert atan2(0, 0) is S.NaN
@@ -1221,6 +1221,10 @@ def test_leading_terms():
         for a in (1/x, S.Half):
             eq = func(a)
             assert eq.as_leading_term(x) == eq
+
+    # https://github.com/sympy/sympy/issues/21038
+    f = sin(pi*(x + 4))/(3*x)
+    assert f.as_leading_term(x) == pi/3
 
 
 def test_atan2_expansion():

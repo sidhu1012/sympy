@@ -1206,11 +1206,8 @@ class Float(Number):
         return obj
 
     # mpz can't be pickled
-    def __getnewargs__(self):
-        return (mlib.to_pickable(self._mpf_),)
-
-    def __getstate__(self):
-        return {'_prec': self._prec}
+    def __getnewargs_ex__(self):
+        return ((mlib.to_pickable(self._mpf_),), {'precision': self._prec})
 
     def _hashable_content(self):
         return (self._mpf_, self._prec)
@@ -1386,8 +1383,6 @@ class Float(Number):
             other = _sympify(other)
         except SympifyError:
             return NotImplemented
-        if not self:
-            return not other
         if isinstance(other, Boolean):
             return False
         if other.is_NumberSymbol:
@@ -1408,6 +1403,8 @@ class Float(Number):
             # the mpf tuples
             ompf = other._as_mpf_val(self._prec)
             return bool(mlib.mpf_eq(self._mpf_, ompf))
+        if not self:
+            return not other
         return False    # Float != non-Number
 
     def __ne__(self, other):
@@ -1976,9 +1973,11 @@ class Rational(Number):
                       use_rho=use_rho, use_pm1=use_pm1,
                       verbose=verbose).copy()
 
+    @property
     def numerator(self):
         return self.p
 
+    @property
     def denominator(self):
         return self.q
 
@@ -2665,6 +2664,7 @@ class One(IntegerConstant, metaclass=Singleton):
     .. [1] https://en.wikipedia.org/wiki/1_%28number%29
     """
     is_number = True
+    is_positive = True
 
     p = 1
     q = 1
@@ -3277,6 +3277,7 @@ nan = S.NaN
 def _eval_is_eq(a, b): # noqa:F811
     return False
 
+
 class ComplexInfinity(AtomicExpr, metaclass=Singleton):
     r"""Complex infinity.
 
@@ -3476,7 +3477,91 @@ class Exp1(NumberSymbol, metaclass=Singleton):
 
     def _eval_power(self, expt):
         from sympy import exp
-        return exp(expt)
+        if global_parameters.exp_is_pow:
+            return self._eval_power_exp_is_pow(expt)
+        else:
+            return exp(expt)
+
+    def _eval_power_exp_is_pow(self, arg):
+        from ..functions.elementary.exponential import log
+        from . import Add, Mul, Pow
+        if arg.is_Number:
+            if arg is oo:
+                return oo
+            elif arg == -oo:
+                return S.Zero
+        elif isinstance(arg, log):
+            return arg.args[0]
+
+        # don't autoexpand Pow or Mul (see the issue 3351):
+        elif not arg.is_Add:
+            Ioo = I*oo
+            if arg in [Ioo, -Ioo]:
+                return nan
+
+            coeff = arg.coeff(pi*I)
+            if coeff:
+                if (2*coeff).is_integer:
+                    if coeff.is_even:
+                        return S.One
+                    elif coeff.is_odd:
+                        return S.NegativeOne
+                    elif (coeff + S.Half).is_even:
+                        return -I
+                    elif (coeff + S.Half).is_odd:
+                        return I
+                elif coeff.is_Rational:
+                    ncoeff = coeff % 2 # restrict to [0, 2pi)
+                    if ncoeff > 1: # restrict to (-pi, pi]
+                        ncoeff -= 2
+                    if ncoeff != coeff:
+                        return S.Exp1**(ncoeff*S.Pi*S.ImaginaryUnit)
+
+            # Warning: code in risch.py will be very sensitive to changes
+            # in this (see DifferentialExtension).
+
+            # look for a single log factor
+
+            coeff, terms = arg.as_coeff_Mul()
+
+            # but it can't be multiplied by oo
+            if coeff in (oo, -oo):
+                return
+
+            coeffs, log_term = [coeff], None
+            for term in Mul.make_args(terms):
+                if isinstance(term, log):
+                    if log_term is None:
+                        log_term = term.args[0]
+                    else:
+                        return
+                elif term.is_comparable:
+                    coeffs.append(term)
+                else:
+                    return
+
+            return log_term**Mul(*coeffs) if log_term else None
+        elif arg.is_Add:
+            out = []
+            add = []
+            argchanged = False
+            for a in arg.args:
+                if a is S.One:
+                    add.append(a)
+                    continue
+                newa = self**a
+                if isinstance(newa, Pow) and newa.base is self:
+                    if newa.exp != a:
+                        add.append(newa.exp)
+                        argchanged = True
+                    else:
+                        add.append(a)
+                else:
+                    out.append(newa)
+            if out or argchanged:
+                return Mul(*out)*Pow(self, Add(*add), evaluate=False)
+        elif arg.is_Matrix:
+            return arg.exp()
 
     def _eval_rewrite_as_sin(self, **kwargs):
         from sympy import sin
@@ -3887,17 +3972,22 @@ class ImaginaryUnit(AtomicExpr, metaclass=Singleton):
         I**3 mod 4 -> -I
         """
 
-        if isinstance(expt, Number):
-            if isinstance(expt, Integer):
-                expt = expt.p % 4
-                if expt == 0:
-                    return S.One
-                if expt == 1:
-                    return S.ImaginaryUnit
-                if expt == 2:
-                    return -S.One
+        if isinstance(expt, Integer):
+            expt = expt % 4
+            if expt == 0:
+                return S.One
+            elif expt == 1:
+                return S.ImaginaryUnit
+            elif expt == 2:
+                return S.NegativeOne
+            elif expt == 3:
                 return -S.ImaginaryUnit
-        return
+        if isinstance(expt, Rational):
+            i, r = divmod(expt, 2)
+            rv = Pow(S.ImaginaryUnit, r, evaluate=False)
+            if i % 2:
+                return Mul(S.NegativeOne, rv, evaluate=False)
+            return rv
 
     def as_base_exp(self):
         return S.NegativeOne, S.Half

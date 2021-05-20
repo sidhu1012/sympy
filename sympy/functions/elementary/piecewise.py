@@ -742,16 +742,39 @@ class Piecewise(Function):
             if isinstance(cond, And):
                 lower = S.NegativeInfinity
                 upper = S.Infinity
+                exclude = []
                 for cond2 in cond.args:
                     if isinstance(cond2, Equality):
                         lower = upper  # ignore
                         break
+                    elif isinstance(cond2, Unequality):
+                        l, r = cond2.args
+                        if l == sym:
+                            exclude.append(r)
+                        elif r == sym:
+                            exclude.append(l)
+                        else:
+                            nonsymfail(cond2)
+                        continue
                     elif cond2.lts == sym:
                         upper = Min(cond2.gts, upper)
                     elif cond2.gts == sym:
                         lower = Max(cond2.lts, lower)
                     else:
                         nonsymfail(cond2)  # should never get here
+                if exclude:
+                    exclude = list(ordered(exclude))
+                    newcond = []
+                    for i, e in enumerate(exclude):
+                        if e < lower == True or e > upper == True:
+                            continue
+                        if not newcond:
+                            newcond.append((None, lower))  # add a primer
+                        newcond.append((newcond[-1][1], e))
+                    newcond.append((newcond[-1][1], upper))
+                    newcond.pop(0)  # remove the primer
+                    expr_cond.extend([(iarg, expr, And(i[0] < sym, sym < i[1])) for i in newcond])
+                    continue
             elif isinstance(cond, Relational):
                 lower, upper = cond.lts, cond.gts  # part 1: initialize with givens
                 if cond.lts == sym:                # part 1a: expand the side ...
@@ -864,7 +887,7 @@ class Piecewise(Function):
             except TypeError:
                 pass
 
-    def as_expr_set_pairs(self, domain=S.Reals):
+    def as_expr_set_pairs(self, domain=None):
         """Return tuples for each argument of self that give
         the expression and the interval in which it is valid
         which is contained within the given domain.
@@ -887,8 +910,10 @@ class Piecewise(Function):
          (3, Interval(4, oo))]
         >>> p.as_expr_set_pairs(Interval(0, 3))
         [(1, Interval.Ropen(0, 2)),
-         (2, Interval(2, 3)), (3, EmptySet)]
+         (2, Interval(2, 3))]
         """
+        if domain is None:
+            domain = S.Reals
         exp_sets = []
         U = domain
         complex = not domain.is_subset(S.Reals)
@@ -907,7 +932,8 @@ class Piecewise(Function):
                             setting domain=S.Reals'''))
             cond_int = U.intersect(cond.as_set())
             U = U - cond_int
-            exp_sets.append((expr, cond_int))
+            if cond_int != S.EmptySet:
+                exp_sets.append((expr, cond_int))
         return exp_sets
 
     def _eval_rewrite_as_ITE(self, *args, **kwargs):

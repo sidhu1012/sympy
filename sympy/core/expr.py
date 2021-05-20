@@ -92,7 +92,13 @@ class Expr(Basic, EvalfMixin):
         coeff, expr = self.as_coeff_Mul()
 
         if expr.is_Pow:
-            expr, exp = expr.args
+            if expr.base is S.Exp1:
+                # If we remove this, many doctests will go crazy:
+                # (keeps E**x sorted like the exp(x) function,
+                #  part of exp(x) to E**x transition)
+                expr, exp = Function("exp")(expr.exp), S.One
+            else:
+                expr, exp = expr.args
         else:
             expr, exp = expr, S.One
 
@@ -857,6 +863,7 @@ class Expr(Basic, EvalfMixin):
             return False
 
     def _eval_is_extended_positive_negative(self, positive):
+        from sympy.core.numbers import pure_complex
         from sympy.polys.numberfields import minimal_polynomial
         from sympy.polys.polyerrors import NotAlgebraic
         if self.is_number:
@@ -878,8 +885,15 @@ class Expr(Basic, EvalfMixin):
             if n2 is S.NaN:
                 return None
 
-            r, i = self.evalf(2).as_real_imag()
-            if not i.is_Number or not r.is_Number:
+            f = self.evalf(2)
+            if f.is_Float:
+                match = f, S.Zero
+            else:
+                match = pure_complex(f)
+            if match is None:
+                return False
+            r, i = match
+            if not (i.is_Number and r.is_Number):
                 return False
             if r._prec != 1 and i._prec != 1:
                 return bool(not i and ((r > 0) if positive else (r < 0)))
@@ -2139,12 +2153,21 @@ class Expr(Basic, EvalfMixin):
 
         See Also
         ========
-        normal: return a/b instead of a, b
-        """
 
+        normal: return ``a/b`` instead of ``(a, b)``
+
+        """
         return self, S.One
 
     def normal(self):
+        """ expression -> a/b
+
+        See Also
+        ========
+
+        as_numer_denom: return ``(a, b)`` instead of ``a/b``
+
+        """
         from .mul import _unevaluated_Mul
         n, d = self.as_numer_denom()
         if d is S.One:
@@ -2997,6 +3020,9 @@ class Expr(Basic, EvalfMixin):
                     s1 += Order(x**n, x)
                 o = s1.getO()
                 s1 = s1.removeO()
+            elif s1.has(Order):
+                # asymptotic expansion
+                return s1
             else:
                 o = Order(x**n, x)
                 s1done = s1.doit()
@@ -3675,11 +3701,6 @@ class Expr(Basic, EvalfMixin):
         from sympy.polys import factor
         return factor(self, *gens, **args)
 
-    def refine(self, assumption=True):
-        """See the refine function in sympy.assumptions"""
-        from sympy.assumptions import refine
-        return refine(self, assumption)
-
     def cancel(self, *gens, **args):
         """See the cancel function in sympy.polys"""
         from sympy.polys import cancel
@@ -3746,7 +3767,7 @@ class Expr(Basic, EvalfMixin):
                     'Expected a number but got %s:' % func_name(x))
         elif x in (S.NaN, S.Infinity, S.NegativeInfinity, S.ComplexInfinity):
             return x
-        if not x.is_extended_real:
+        if x.is_extended_real is False:
             r, i = x.as_real_imag()
             return r.round(n) + S.ImaginaryUnit*i.round(n)
         if not x:
